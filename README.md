@@ -584,16 +584,7 @@ project/
 │       ├── cross/
 │       └── x/
 │
-├── our_images/                      # Custom test images
-├── our_images_masks/                # Custom image masks
-│   └── rectangular/
-├── our_Inpainting/                  # Custom image results
-│   ├── Vanilla_with_general_text/
-│   ├── Vanilla_with_generated_text/
-│   └── Vanilla_without_text/
-│
-├── evaluation_all_methods_*.json    # Evaluation results with timestamp
-└── NotInUse/                        # Archived experiments and scripts
+├── evaluation_results_*.json    # Evaluation results with timestamp
 ```
 
 ### Key Naming Conventions

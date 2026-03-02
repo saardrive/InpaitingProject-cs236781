@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch / ML
+*.pth
+*.pt
+*.ckpt
+*.npy
+
+# Data directories
+DIV2K_train_val_HR/
+DIV2K_train_HR/
+DIV2K_valid_HR/
+images/
+our_images/
+our_images_masks/
+
+# Output directories  
+Inpainting/
+our_Inpainting/
+masked_output/
+output/
+results/
+
+# Evaluation results
+evaluation_all_methods_*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Large files
+*.zip
+*.tar.gz
+
+# Archived experiments
+NotInUse/
