@@ -894,7 +894,7 @@ February 2026
 ---
 
 ## License
-
+MIT
 This project is an academic research implementation. For academic or research use only.
 
 ---
