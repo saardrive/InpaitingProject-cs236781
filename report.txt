@@ -1,0 +1,385 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\captionsetup{
+    font=small,
+    labelfont=bf,
+    format=hang,
+    justification=raggedright
+}
+\graphicspath{ {"Comparison Figures/"} }
+
+
+% Updated Title
+\title{Improving Vanilla Inpainting}
+
+\author{
+    Saar Drive, Omer Shenkar
+}
+
+\date{February 2026}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+Deep neural networks, particularly diffusion models, have recently emerged as state-of-the-art generative models, achieving success in both unconditional generation and targeted editing tasks such as image inpainting \cite{song2021scorebasedgenerativemodelingstochastic, lugmayr2022repaintinpaintingusingdenoising}.
+
+The diffusion process relies on two stages: a forward corruption process that progressively perturbs the data distribution with Gaussian noise (often formulated as a stochastic differential equation \cite{song2021scorebasedgenerativemodelingstochastic}), and a learned reverse stage. In the reverse process, a neural network trained via score matching estimates the log-probability gradients of the perturbed data to iteratively denoise the sample.
+
+In this work, we implement a vanilla diffusion inpainting pipeline using Stable Diffusion 2 as a baseline \cite{rombach2022highresolutionimagesynthesislatent}. After identifying failure modes within this standard pipeline, we proposed and implement targeted improvements. To demonstrate plausible generative capabilities, we evaluated our enhanced approach on custom-masked images. Furthermore, we validate our results on the DIV2K dataset \cite{DATASET_Agustsson_2017_CVPR_Workshops, DATASET_Timofte_2017_CVPR_Workshops} using Learned Perceptual Image Patch Similarity (LPIPS) \cite{zhang2018unreasonable}, Structural Similarity Index Measure (SSIM) \cite{wang2004image}, and qualitative visual evaluation- all commonly used evaluation methods \cite{lugmayr2022repaintinpaintingusingdenoising} \cite{wang2004image}.
+All inpainting results can be found \href{https://technionmail-my.sharepoint.com/:f:/g/personal/saar_drive_campus_technion_ac_il/IgA8EBEy-LXmSJYFIAHtZQtXAZ5AAULdv7ksafrU6pPFI5E?e=0PcX0J}{here}.
+Github Repository can be found \href{https://github.com/saardrive/InpaitingProject-cs236781}{here}.
+
+\section{Methodology}
+Initially, we implemented a vanilla pipeline to test the foundational capabilities of our baseline model. We created a rectangular mask for each of our three test images (a bookshelf, a cookie tray, and a black dog). These masked images were fed into the model alongside a separate image consisting of the binary mask. Following standard inpainting methodology, the process proceeds as follows: the known region is perturbed according to the forward noise schedule, the unknown region is perturbed using the same Gaussian noise distribution, and the two are subsequently binarily weighted and summed using the mask.
+
+In this initial configuration, we first used no text prompt to evaluate the model's performance without any prior verbal guidance. Subsequently, we introduced a general prompt: "Inpaint the image to make it look as it would be without the missing part". Text embedding is performed using Contrastive Language-Image Pre-training (CLIP), which tokenizes the text and produces a sequence of token embeddings \cite{radford2021learningtransferablevisualmodels}. These embeddings are then fed into the U-Net \cite{ronneberger2015unetconvolutionalnetworksbiomedical}, which uses cross-attention mechanisms to guide the noise prediction. The purpose of using a general prompt was to evaluate the model's ability to execute the inpainting task without relying on image-specific contextual clues. \\
+
+After achieving visually poor results using the vanilla pipeline, we defined a new pipeline for image inpainting consisting of two improvement methods.
+
+\subsection{Method 1: LLM-Based Prompt Generation}
+After examining the results of the vanilla pipeline, we hypothesized that providing a unique prompt for each image would improve the outputs, as it guides the generative model with embeddings related to the specific image. However, generating a specific prompt per image manually is highly impractical, particularly for large datasets.
+
+To address this challenge, we adopted a multimodal approach. Leveraging the Transformers API, we utilized the LLaVA model (specifically, llava-hf/llava-v1.6-mistral-7b-hf \cite{liu2024improvedbaselinesvisualinstruction}) to create specific image descriptions. The model was provided with the masked images and tasked with generating a corresponding description. The model did not have access to any prior knowledge regarding the content hidden behind the masked regions in the images.
+The guidance prompt for LLaVA was generated with the assistance of Gemini \cite{gemini31pro2026}:
+\\
+"You are a prompt generation machine for Stable Diffusion. Look at this image. Your goal is to generate a text prompt that describes the image and provides logical details to fill in the missing areas (inpainting).\\
+
+Rules:\\
+1. Output ONLY the raw prompt text.\\
+2. Use comma-separated keywords and phrases.\\
+3. Do NOT use bullet points, conversational filler, or introductions like 'Here is the prompt'.\\
+4. Focus on: Subject description, Lighting, Background scenery, Art style, and Vibe.\\
+\\
+
+Using this guidance prompt, the LLaVA model processed the entire masked dataset. All generated descriptions were saved in a single JSON file containing the filenames, file paths, and descriptions. Consequently, instead of relying on a generalized text prompt as in the vanilla pipeline, the Denoising Diffusion Probabilistic Model (DDPM) utilized the LLaVA-generated prompts, thereby providing each image with a unique, tailor-made contextual guide. An example for a masked image and its corresponding prompt can be seen in figure \ref{fig:original_starfish}\\
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.4\textwidth]{masked_output/rectangular/images/0001_masked.png}
+    \caption{An example masked image from the DIV2K dataset. Generated description- "Purple starfish, underwater, coral reef, marine life, vibrant colors, ocean depths, natural beauty, biodiversity, marine ecosystem, underwater photography, sea creatures, deep sea, marine environment, marine life photography, ocean floor, coral reefs, sea creatures"}
+    \label{fig:original_starfish}
+\end{figure}
+
+
+\subsection{Method 2: Averaging to Create a Smooth Inpainting Boundary}
+Although the first method improved the overall inpainting quality, we observed (by visual inspection) sharp transitions along the edges in certain cases. While the prompt provided appropriate semantic context for the inpainted region (i.e., specifying which elements should appear), the boundary of the mask remained noticeable.
+
+
+To address this issue, we implemented three custom averaging filters using the following kernels:
+\\
+\[
+\underbrace{\frac{1}{9} \begin{bmatrix} 1 & 1 & 1 \\ 1 & 1 & 1 \\ 1 & 1 & 1 \end{bmatrix}}_{\text{Regular}}, \quad \underbrace{\frac{1}{5} \begin{bmatrix} 0 & 1 & 0 \\ 1 & 1 & 1 \\ 0 & 1 & 0 \end{bmatrix}}_{\text{Cross}}, \quad \underbrace{\frac{1}{5} \begin{bmatrix} 1 & 0 & 1 \\ 0 & 1 & 0 \\ 1 & 0 & 1 \end{bmatrix}}_{\text{X}}
+\]
+\\
+
+After encoding the image into the latent space, a 2D filter was applied to the encoded masked image specifically across the mask's borders with the known region to achieve a smoother boundary. 
+These filters were applied every $K=5$ denoising iterations to facilitate a smoother blending between the latent representations of the original image and the inpainted region. Because the vanilla pipeline demonstrated the baseline diffusion model's ability to generate logical, natural-looking images, we hypothesized that enforcing smooth edges in the latent space would organically cascade further into the generated image.
+
+\section{Experiments}
+Although our initial methodology testing relied solely on a rectangular mask using our own images, our formal experiments were designed to evaluate the improved pipelines across a broader variety of images (using the DIV2K dataset) and mask configurations. The goal was to test both robustness to varying masks and to establish statistics based on a significantly larger database.
+
+Specifically, we created the following mask patterns:\\
+1. Brush-stroke masks\\
+2. Circular masks\\
+3. Half-plane masks\\
+4. Random rectangular patches masks\\
+5. Rectangular masks\\
+
+\begin{figure}[ht!]
+    \centering
+    \includegraphics[width=1\linewidth]{003_all_masks.jpg}
+    \caption{All mask types. From left to right- Brush stroke, circular, half, random patches, rectangular}
+    \label{fig:003_all_masks}
+\end{figure}
+
+All mask types are illustrated in Figure \ref{fig:003_all_masks}. After applying these masks to every image in the dataset, the LLaVA model generated descriptive prompts for each masked image, which were subsequently leveraged by the DDPM. We evaluated these masked images across five primary experimental setups:\\
+1. Vanilla pipeline without text guidance.\\
+2. Vanilla pipeline with a general prompt: "Inpaint the image to make it look as it would be without the missing part."\\
+3. Pipeline utilizing the LLaVA-generated specific prompts.\\
+4. Pipeline utilizing boundary averaging (Regular, Cross, and X kernels) combined with the general prompt.\\
+5. Pipeline utilizing boundary averaging (Regular, Cross, and X kernels) combined with the specific LLaVA-generated prompts.\\
+All quantitative metrics were computed using the full extent of the inpainted and original images, rather than being restricted solely to the masked regions, as common practice dictates \cite{lugmayr2022repaintinpaintingusingdenoising} \cite{wang2004image}.
+
+
+\subsection{Experiment 1: Vanilla pipeline without text guidance}
+For our baseline, we ran the standard DDPM inpainting pipeline without any text conditioning. By feeding an empty string into the U-Net, we forced the model to rely entirely on unconditioned text embeddings. At each denoising step $t$, we applied the vanilla inpainting method previously mentioned. We ran these tests for $50$ denoising steps with a fixed random seed $(42)$ across all six mask configurations on the DIV2K validation set.
+The outcome highlighted a major flaw in the vanilla pipeline: without text guidance, the model struggles to generate semantically coherent content. Even when the inpainted textures looked locally realistic, they usually failed to match the surrounding context, leaving unnatural structures. As expected, this issue was even more severe with large masks (such as half-plane), where the model lacked enough surrounding visual context to draw from. Example results can be seen in figures \ref{fig:exp1_our_vanilla_no_text} and \ref{fig:exp1_vanilla_no_text}, and quantitative metrics can be seen in table \ref{tab:exp1_vanilla_no_text}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{Comparison Figures/inpainting_our_images_no_text.png}
+    \caption{Results on the vanilla pipeline on our images- no prompts and no averaging.}
+    \label{fig:exp1_our_vanilla_no_text}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Quantitative results for Experiment 1: Vanilla pipeline without text guidance. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:exp1_vanilla_no_text}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6045 \pm 0.1251$ & $0.2123 \pm 0.0414$ \\
+Circular       & $0.6270 \pm 0.1273$ & $0.1793 \pm 0.0429$ \\
+Random Patches & $0.6514 \pm 0.1306$ & $0.1508 \pm 0.0451$ \\
+Brush Stroke   & $0.5256 \pm 0.1109$ & $0.3619 \pm 0.0618$ \\
+Half-plane     & $0.4210 \pm 0.0993$ & $0.4591 \pm 0.0405$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_comparison_Vanilla_without_text.png}
+    \caption{Example results on the vanilla pipeline- no prompts and no averaging. For each mask, the top row is the masked image, the bottom is the inpainted.}
+    \label{fig:exp1_vanilla_no_text}
+\end{figure}
+
+\subsection{Experiment 2: Vanilla pipeline with a general prompt}
+Building on the vanilla pipeline, we used a generic text prompt: "Inpaint the image to make it look as it would be without the missing part". Following tokenization via CLIP, the resulting embeddings were passed into the U-Net's cross-attention layers at each denoising step. Classifier-free guidance was applied with a scale of $7.5$ to blend the conditional and unconditional noise predictions, while all other hyperparameters (50 steps, seed 42) remained the same.
+The results indicated that the model did not generate content that better aligned with the fundamental objective of inpainting, compared to no text prompt. This limitation is likely due to the prompt's lack of image-specific details. Qualitatively, the boundary between the original and synthesized regions remained highly visible.
+Quantitatively, we observed no significant improvement in either the SSIM or LPIPS scores compared to the unconditioned baseline. Example results can be seen in figures \ref{fig:exp2_our_vanilla_general_text} and \ref{fig:exp2_vanilla_general_text}, and quantitative metrics can be seen in table \ref{tab:exp2_vanilla_general_text}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{Comparison Figures/inpainting_our_images_general.png}
+    \caption{Results on the vanilla pipeline on our images- one general prompt and no averaging.}
+    \label{fig:exp2_our_vanilla_general_text}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Quantitative results for Experiment 2: Vanilla pipeline with a general prompt. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:exp2_vanilla_general_text}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6082 \pm 0.1267$ & $0.2244 \pm 0.0459$ \\
+Circular       & $0.6286 \pm 0.1281$ & $0.1830 \pm 0.0434$ \\
+Random Patches & $0.6514 \pm 0.1305$ & $0.1515 \pm 0.0453$ \\
+Brush Stroke   & $0.5313 \pm 0.1133$ & $0.3625 \pm 0.0593$ \\
+Half-plane     & $0.4652 \pm 0.1197$ & $0.5040 \pm 0.0537$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+\FloatBarrier
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_comparison_Vanilla_with_general_text.png}
+    \caption{Example results on the vanilla pipeline- one general prompt and no averaging. For each mask, the top row is the masked image, the bottom is the inpainted.}
+    \label{fig:exp2_vanilla_general_text}
+\end{figure}
+\FloatBarrier
+
+
+\subsection{Experiment 3: Pipeline utilizing the LLaVA-generated specific prompts}
+Next, we replaced the generic prompt with custom, image-specific descriptions generated by the LLaVA model. We provided LLaVA with the masked image and instructed it to generate a Stable Diffusion-compatible prompt describing the scene, requiring the model to deduce what logically belonged in the missing area. LLaVA was never exposed to the ground-truth images. We saved these descriptions to a JSON file and, during the inpainting process, retrieved the unique CLIP-encoded prompt for each image to condition the U-Net. 
+This approach represented a clear qualitative improvement over the first two experiments. The inpainted areas exhibited significantly better semantic coherence within the broader scene. 
+However, while the generated content improved dramatically, for some masks, harsh and visible boundaries along the mask edges persisted as a recurring artifact.
+Although visual inspections indicated substantial improvements, quantitative evaluation revealed no significant difference in the LPIPS and SSIM scores compared to previous baselines.
+
+
+Example results can be seen in figures \ref{fig:exp_3_our_generated_text} and \ref{fig:exp_3_generated_text}, and quantitative metrics can be seen in table \ref{tab:exp3_generated_text}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_our_images_generated.png}
+    \caption{Results of the first method on our images- individually generated prompts for each image and no averaging.}
+    \label{fig:exp_3_our_generated_text}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Quantitative results for Experiment 3: Pipeline utilizing the LLaVA-generated specific prompts. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:exp3_generated_text}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6015 \pm 0.1233$ & $0.2157 \pm 0.0421$ \\
+Circular       & $0.6265 \pm 0.1260$ & $0.1802 \pm 0.0433$ \\
+Random Patches & $0.6511 \pm 0.1306$ & $0.1511 \pm 0.0451$ \\
+Brush Stroke   & $0.5260 \pm 0.1122$ & $0.3613 \pm 0.0609$ \\
+Half-plane     & $0.4301 \pm 0.1142$ & $0.4601 \pm 0.0486$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+\FloatBarrier
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_comparison_generated_text_no_interpolation.png}
+    \caption{Example results on our first method- individually generated prompts for each image and no averaging. For each mask, the top row is the masked image, the bottom is the inpainted.}
+    \label{fig:exp_3_generated_text}
+\end{figure}
+
+\subsection{Experiment 4: Pipeline utilizing boundary averaging (Regular, Cross, and X kernels) combined with the general prompt}
+To tackle those harsh borders, we introduced our boundary averaging technique (Method 2), applying it to the generic-prompt setup from Experiment 2. We applied a spatial averaging filter every $K=5$ steps in the latent space, targeting only the edge between the known and unknown areas. We isolated this seam by dilating and eroding the latent-space mask and finding the difference, leaving us with a thin ring of latent pixels.
+During every eligible step, we stitched the denoised and noisy latents together, applied the chosen kernel across the whole image, and then blended that smoothed result strictly into the boundary ring.
+Compared to Experiment 2, this smoothed out the transitions, though not as much as expected, with no significant difference between the different kernels. In addition, there was no big difference in the quantitative results.
+
+Example results can be seen in figure \ref{fig:exp_4_general_interpolated}, and quantitative metrics can be seen in tables \ref{tab:spatial_regular_general} - \ref{tab:spatial_x_general}
+
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary averaging with Regular Kernel and General Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_regular_general}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6097 \pm 0.1267$ & $0.2257 \pm 0.0458$ \\
+Circular       & $0.6283 \pm 0.1281$ & $0.1849 \pm 0.0436$ \\
+Random Patches & $0.6509 \pm 0.1306$ & $0.1514 \pm 0.0456$ \\
+Brush Stroke   & $0.5446 \pm 0.1182$ & $0.3932 \pm 0.0641$ \\
+Half-plane     & $0.4698 \pm 0.1207$ & $0.5066 \pm 0.0557$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary Averaging with Cross Kernel and General Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_cross_general}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6098 \pm 0.1268$ & $0.2255 \pm 0.0458$ \\
+Circular       & $0.6285 \pm 0.1281$ & $0.1846 \pm 0.0436$ \\
+Random Patches & $0.6510 \pm 0.1306$ & $0.1514 \pm 0.0455$ \\
+Brush Stroke   & $0.5428 \pm 0.1173$ & $0.3945 \pm 0.0646$ \\
+Half-plane     & $0.4696 \pm 0.1207$ & $0.5066 \pm 0.0560$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary Averaging with X Kernel and General Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_x_general}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6095 \pm 0.1267$ & $0.2250 \pm 0.0457$ \\
+Circular       & $0.6281 \pm 0.1281$ & $0.1845 \pm 0.0435$ \\
+Random Patches & $0.6509 \pm 0.1306$ & $0.1512 \pm 0.0455$ \\
+Brush Stroke   & $0.5462 \pm 0.1187$ & $0.3888 \pm 0.0635$ \\
+Half-plane     & $0.4693 \pm 0.1206$ & $0.5058 \pm 0.0555$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_interpolation_comparison_general_text.png}
+    \caption{Example results on our second method- one general prompt for all images with 3 different averaging kernels.}
+    \label{fig:exp_4_general_interpolated}
+\end{figure}
+
+
+
+\subsection{Experiment 5: Pipeline utilizing boundary Averaging (Regular, Cross, and X kernels) combined with the specific LLaVA-generated prompts}
+Finally, we put everything together, combining the LLaVA-generated specific prompts (Method 1) with the boundary averaging technique (Method 2). We kept the settings from Experiment 4 but swapped in the custom prompts, evaluating the Regular, Cross, and X boundary smoothing kernels separately (applied every $K=5$ steps).
+This configuration proved to be our most complete and visually successful pipeline. The LLaVA prompts ensured the new content made sense for the specific scene. The boundary averaging smoothed the transitions between the masked and the non-masked areas, but not as expected, and in some cases, the boundary still remained clear.
+Our only major remaining hurdle was the half-plane mask; missing half an image simply removes too much context for any prompt strategy to confidently rebuild the scene.
+
+Example results can be seen in figure \ref{fig:exp_5_generated_interpolated}, and quantitative metrics can be seen in tables \ref{tab:spatial_regular_generated} - \ref{tab:spatial_x_generated}
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary Averaging with Regular Kernel and LLaVA-Generated Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_regular_generated}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6033 \pm 0.1237$ & $0.2156 \pm 0.0425$ \\
+Circular       & $0.6265 \pm 0.1262$ & $0.1807 \pm 0.0435$ \\
+Random Patches & $0.6510 \pm 0.1305$ & $0.1510 \pm 0.0454$ \\
+Brush Stroke   & $0.5458 \pm 0.1169$ & $0.3915 \pm 0.0639$ \\
+Half-plane     & $0.4318 \pm 0.1145$ & $0.4601 \pm 0.0487$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary Averaging with Cross Kernel and LLaVA-Generated Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_cross_generated}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6033 \pm 0.1237$ & $0.2155 \pm 0.0425$ \\
+Circular       & $0.6267 \pm 0.1262$ & $0.1806 \pm 0.0435$ \\
+Random Patches & $0.6511 \pm 0.1305$ & $0.1509 \pm 0.0454$ \\
+Brush Stroke   & $0.5442 \pm 0.1160$ & $0.3925 \pm 0.0644$ \\
+Half-plane     & $0.4316 \pm 0.1145$ & $0.4602 \pm 0.0487$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Quantitative results: Boundary Averaging with X Kernel and LLaVA-Generated Text. SSIM and LPIPS metrics are presented as Mean $\pm$ Standard Deviation across 900 images per mask type.}
+\label{tab:spatial_x_generated}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Mask Type} & \textbf{SSIM ($\uparrow$)} & \textbf{LPIPS ($\downarrow$)} \\
+\midrule
+Rectangular    & $0.6031 \pm 0.1237$ & $0.2152 \pm 0.0424$ \\
+Circular       & $0.6263 \pm 0.1261$ & $0.1805 \pm 0.0435$ \\
+Random Patches & $0.6509 \pm 0.1305$ & $0.1508 \pm 0.0453$ \\
+Brush Stroke   & $0.5471 \pm 0.1174$ & $0.3857 \pm 0.0631$ \\
+Half-plane     & $0.4316 \pm 0.1145$ & $0.4598 \pm 0.0486$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{Comparison Figures/inpainting_interpolation_comparison_generated_text.png}
+    \caption{Example results on both methods combined- using generated prompts + 3 averaging kernel types.}
+    \label{fig:exp_5_generated_interpolated}
+\end{figure}
+
+\section{Summary}
+In this study, we identified and addressed key failure modes in vanilla diffusion-based image inpainting. We proposed a dual-method pipeline utilizing LLaVA-generated, image-specific prompts alongside latent-space boundary averaging.
+Our findings demonstrate that while generic text guidance mostly yields poor semantic coherence, using a multimodal large language model to generate context-aware prompts significantly improves the logical and semantic consistency of the inpainted regions. Furthermore, applying spatial averaging filters (Regular, Cross, and X kernels) along the mask boundaries during the denoising process partially mitigates the harsh transition artifacts characteristic of vanilla inpainting. 
+
+\section{Limitations}
+Despite the qualitative success of our enhanced pipeline, several limitations remain. First, our dependence on global structural and perceptual metrics (SSIM and LPIPS) masked the localized improvements of our methods. Future work should consider using additional evaluation metrics.
+
+Second, our boundary averaging technique, while partially effective in many scenarios, did not eliminate edge artifacts as we expected it would. The fixed application of the spatial filter every $K$ steps may not be optimal for all noise schedules, mask shapes, or high-frequency image textures. More sophisticated, adaptive blending techniques in the latent space could yield further improvements.
+Finally, the pipeline struggles with extreme information loss. As seen by the poor performance on the half-plane masks, the diffusion model struggles when the available visual context is too sparse.
+
+\section{Work Report}
+As common methods dictate these days, AI services were used in this project. The core pipeline ideas were our own original ideas, both the multi-modal approach to generate custom prompts per image, and the averaging method to smooth the inpainting boundaries. Across all our code files, we wrote the foundational code to implement these ideas and were assisted by Claude Sonnet 4.5 \cite{anthropic2024claude3} to expand upon them, fix bugs, and perform related tasks. Subsequently, the source code formatting was standardized using the autopep8 extension in VS Code \cite{ms_autopep8_vscode}.
+\\
+This report was written by us, with a slight assistance of Grammarly.
+
+
+
+
+\bibliographystyle{ieeetr}
+\bibliography{ref.bib}
+\end{document}
